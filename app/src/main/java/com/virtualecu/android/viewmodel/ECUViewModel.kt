@@ -2,20 +2,21 @@ package com.virtualecu.android.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.gson.Gson
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.google.gson.JsonSyntaxException
 import com.virtualecu.android.api.RetrofitClient
-import com.virtualecu.android.model.LogResponse
 import com.virtualecu.android.model.PeriodicMessage
-import com.virtualecu.android.model.PeriodicResponse
 import com.virtualecu.android.model.PidInfo
-import com.virtualecu.android.model.PidResponse
-import com.virtualecu.android.model.StatsResponse
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import okhttp3.ResponseBody
 import retrofit2.HttpException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -31,13 +32,17 @@ data class ECUState(
     val connected: Boolean = false,
     val loading: Boolean = false,
     val error: String? = null,
-    val baseIp: String = "192.168.4.1"
+    val baseIp: String = "192.168.4.1",
+    val rawPidsResponse: String = "",
+    val rawStatsResponse: String = "",
+    val rawPeriodicResponse: String = ""
 )
 
 class ECUViewModel : ViewModel() {
 
     private val _state = MutableStateFlow(ECUState())
     val state: StateFlow<ECUState> = _state.asStateFlow()
+    private val gson = Gson()
 
     private val pidDefinitions = listOf(
         PidInfo("04", "Engine Load", "%", 0f, 0f, 100f),
@@ -55,22 +60,6 @@ class ECUViewModel : ViewModel() {
         PidInfo("5C", "Oil Temp", "°C", 0f, -40f, 215f)
     )
 
-    private val rawToPidMap: Map<String, (PidResponse) -> Float> = mapOf(
-        "04" to { it.engineLoad },
-        "05" to { it.coolantTemp },
-        "0B" to { it.intakePress },
-        "0C" to { it.engineRpm },
-        "0D" to { it.vehicleSpeed },
-        "0F" to { it.intakeAirTemp },
-        "10" to { it.maf },
-        "11" to { it.throttlePos },
-        "21" to { it.distanceDtc },
-        "2F" to { it.fuelLevel },
-        "31" to { it.odometer },
-        "46" to { it.ambientTemp },
-        "5C" to { it.oilTemp }
-    )
-
     private var pollingJob: Job? = null
 
     fun setBaseIp(ip: String) {
@@ -83,7 +72,8 @@ class ECUViewModel : ViewModel() {
             _state.value = _state.value.copy(loading = true, error = null)
             try {
                 RetrofitClient.updateBaseUrl(_state.value.baseIp)
-                RetrofitClient.getApi().getPids()
+                val bodyString = safeReadBody(RetrofitClient.getApi().getPids())
+                parsePids(bodyString)
                 _state.value = _state.value.copy(connected = true, loading = false, error = null)
                 startPolling()
             } catch (e: Exception) {
@@ -98,7 +88,10 @@ class ECUViewModel : ViewModel() {
 
     fun disconnect() {
         pollingJob?.cancel()
-        _state.value = _state.value.copy(connected = false, pids = emptyList(), error = null)
+        _state.value = _state.value.copy(
+            connected = false, pids = emptyList(), error = null,
+            rawPidsResponse = "", rawStatsResponse = "", rawPeriodicResponse = ""
+        )
     }
 
     private fun startPolling() {
@@ -115,41 +108,120 @@ class ECUViewModel : ViewModel() {
         try {
             val api = RetrofitClient.getApi()
 
-            val pidsResponse: PidResponse = try {
-                api.getPids()
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(error = "PID fetch failed: ${formatError(e)}")
-                return
-            }
+            val pidsRaw = safeReadBody(api.getPids())
+            parsePids(pidsRaw)
 
-            val pidsCombined = pidDefinitions.map { def ->
-                val value = rawToPidMap[def.pid]?.invoke(pidsResponse) ?: def.value
-                def.copy(value = value)
-            }
+            val periodicRaw = safeReadBody(api.getPeriodic())
+            parsePeriodic(periodicRaw)
 
-            val periodicResponse: PeriodicResponse = try {
-                api.getPeriodic()
-            } catch (e: Exception) { PeriodicResponse(emptyList()) }
+            val statsRaw = safeReadBody(api.getStats())
+            parseStats(statsRaw)
 
-            val stats: StatsResponse = try {
-                api.getStats()
-            } catch (e: Exception) { StatsResponse(0, 0, 0) }
-
-            _state.value = _state.value.copy(
-                pids = pidsCombined,
-                messages = periodicResponse.messages,
-                txCount = stats.txCount,
-                rxCount = stats.rxCount,
-                uptime = stats.uptime,
-                connected = true,
-                error = null
-            )
+            _state.value = _state.value.copy(connected = true, error = null)
         } catch (e: Exception) {
             _state.value = _state.value.copy(
                 error = "Poll error: ${formatError(e)}",
                 connected = false
             )
             pollingJob?.cancel()
+        }
+    }
+
+    private fun parsePids(raw: String) {
+        _state.value = _state.value.copy(rawPidsResponse = raw)
+        try {
+            val root = JsonParser.parseString(raw)
+            val obj = when {
+                root.isJsonObject -> root.asJsonObject
+                root.isJsonArray -> {
+                    val map = JsonObject()
+                    root.asJsonArray.forEach { item ->
+                        val el = item.asJsonObject
+                        val pid = el.get("pid")?.asString ?: return@forEach
+                        val value = el.get("value")?.asFloat ?: el.get("v")?.asFloat ?: return@forEach
+                        map.addProperty(pid, value)
+                    }
+                    map
+                }
+                else -> JsonObject()
+            }
+
+            val pidsCombined = pidDefinitions.map { def ->
+                val value = extractPidValue(obj, def.pid)
+                def.copy(value = value)
+            }
+            _state.value = _state.value.copy(pids = pidsCombined)
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(error = "PID parse error: ${e.localizedMessage}")
+        }
+    }
+
+    private fun extractPidValue(obj: JsonObject, pid: String): Float {
+        obj.get(pid)?.let { return it.asFloat }
+        obj.get(pid.trimStart('0'))?.let { return it.asFloat }
+        val pidInt = pid.toIntOrNull()
+        if (pidInt != null) obj.get(pidInt.toString())?.let { return it.asFloat }
+        obj.entrySet().forEach { (key, value) ->
+            if (key.equals(pid, ignoreCase = true)) return value.asFloat
+            if (key.trimStart('0') == pid.trimStart('0')) return value.asFloat
+        }
+        return 0f
+    }
+
+    private fun parsePeriodic(raw: String) {
+        _state.value = _state.value.copy(rawPeriodicResponse = raw)
+        try {
+            val root = JsonParser.parseString(raw)
+            val msgs: List<PeriodicMessage> = when {
+                root.isJsonArray -> {
+                    root.asJsonArray.map { el ->
+                        val obj = el.asJsonObject
+                        PeriodicMessage(
+                            id = obj.get("id")?.asString ?: "",
+                            name = obj.get("name")?.asString ?: obj.get("desc")?.asString ?: "",
+                            interval = obj.get("interval")?.asInt ?: obj.get("ms")?.asInt ?: 0,
+                            enabled = obj.get("enabled")?.asBoolean ?: obj.get("active")?.asBoolean ?: false
+                        )
+                    }
+                }
+                root.isJsonObject -> {
+                    val obj = root.asJsonObject
+                    val messagesArr = obj.getAsJsonArray("messages")
+                        ?: obj.getAsJsonArray("periodic")
+                        ?: obj.getAsJsonArray("list")
+                    messagesArr?.map { el ->
+                        val o = el.asJsonObject
+                        PeriodicMessage(
+                            id = o.get("id")?.asString ?: "",
+                            name = o.get("name")?.asString ?: "",
+                            interval = o.get("interval")?.asInt ?: 0,
+                            enabled = o.get("enabled")?.asBoolean ?: true
+                        )
+                    } ?: emptyList()
+                }
+                else -> emptyList()
+            }
+            _state.value = _state.value.copy(messages = msgs)
+        } catch (_: Exception) { }
+    }
+
+    private fun parseStats(raw: String) {
+        _state.value = _state.value.copy(rawStatsResponse = raw)
+        try {
+            val obj = JsonParser.parseString(raw).asJsonObject
+            _state.value = _state.value.copy(
+                txCount = obj.get("txCount")?.asLong ?: obj.get("tx")?.asLong ?: obj.get("txcount")?.asLong ?: 0,
+                rxCount = obj.get("rxCount")?.asLong ?: obj.get("rx")?.asLong ?: obj.get("rxcount")?.asLong ?: 0,
+                uptime = obj.get("uptime")?.asLong ?: obj.get("uptimeSeconds")?.asLong ?: obj.get("up")?.asLong ?: 0
+            )
+        } catch (_: Exception) { }
+    }
+
+    private suspend fun safeReadBody(body: ResponseBody): String {
+        return try {
+            body.string()
+        } catch (e: Exception) {
+            throw Exception("Failed to read response: ${e.localizedMessage}")
         }
     }
 
@@ -163,41 +235,54 @@ class ECUViewModel : ViewModel() {
             is SocketTimeoutException -> "Connection timed out. Check if ECU is powered on."
             is ConnectException -> "Connection refused. Check IP address."
             is UnknownHostException -> "Unknown host. Check IP address."
-            is JsonSyntaxException -> "Invalid response from ECU: ${e.localizedMessage}"
+            is JsonSyntaxException -> "Invalid JSON: ${e.localizedMessage}"
             else -> "${e.localizedMessage ?: "Unknown error"}"
         }
     }
 
     fun setPidOverride(pid: String, value: Float) {
         viewModelScope.launch {
-            try {
-                RetrofitClient.getApi().setPid(pid, value)
-            } catch (_: Exception) { }
+            try { RetrofitClient.getApi().setPid(pid, value) } catch (_: Exception) { }
         }
     }
 
     fun toggleAllMessages(enabled: Boolean) {
         viewModelScope.launch {
-            try {
-                RetrofitClient.getApi().toggleAll(if (enabled) 1 else 0)
-            } catch (_: Exception) { }
+            try { RetrofitClient.getApi().toggleAll(if (enabled) 1 else 0) } catch (_: Exception) { }
+        }
+    }
+
+    fun toggleMessage(index: Int) {
+        viewModelScope.launch {
+            try { RetrofitClient.getApi().toggleMessage(index) } catch (_: Exception) { }
         }
     }
 
     fun fetchLog() {
         viewModelScope.launch {
             try {
-                val logResponse: LogResponse = RetrofitClient.getApi().getLog()
-                _state.value = _state.value.copy(log = logResponse.log)
+                val logText = safeReadBody(RetrofitClient.getApi().getLog())
+                val cleaned = logText
+                    .replace("\\n", "\n")
+                    .replace("\\\"", "\"")
+                    .trim('"')
+                _state.value = _state.value.copy(log = cleaned)
             } catch (_: Exception) { }
         }
     }
 
     fun clearLog() {
         viewModelScope.launch {
+            try { RetrofitClient.getApi().clearLog() } catch (_: Exception) { }
+            _state.value = _state.value.copy(log = "")
+        }
+    }
+
+    fun refreshPids() {
+        viewModelScope.launch {
             try {
-                RetrofitClient.getApi().clearLog()
-                _state.value = _state.value.copy(log = "")
+                val raw = safeReadBody(RetrofitClient.getApi().getPids())
+                parsePids(raw)
             } catch (_: Exception) { }
         }
     }

@@ -185,6 +185,36 @@ fun DashboardScreen(
                     }
                 }
 
+                if (state.rawPidsResponse.isNotBlank()) {
+                    item {
+                        var showRaw by remember { mutableStateOf(false) }
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = { showRaw = !showRaw },
+                                colors = ButtonDefaults.buttonColors(containerColor = DarkCard),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(if (showRaw) "Hide raw data" else "Show raw data")
+                            }
+                            if (showRaw) {
+                                Text(
+                                    text = "PIDs: ${state.rawPidsResponse.take(500)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextSecondary,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                                Text(
+                                    text = "Periodic: ${state.rawPeriodicResponse.take(500)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextSecondary,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
                 item {
                     Text(
                         text = "PID Signals",

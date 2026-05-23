@@ -1,38 +1,37 @@
 package com.virtualecu.android.api
 
-import com.virtualecu.android.model.LogResponse
-import com.virtualecu.android.model.PeriodicResponse
-import com.virtualecu.android.model.PidResponse
-import com.virtualecu.android.model.StatsResponse
-import com.virtualecu.android.model.ToggleResponse
+import okhttp3.ResponseBody
 import retrofit2.http.GET
 import retrofit2.http.Query
 
 interface ECUApi {
 
     @GET("/api/pids")
-    suspend fun getPids(): PidResponse
+    suspend fun getPids(): ResponseBody
 
     @GET("/api/pid")
     suspend fun setPid(
         @Query("pid") pid: String,
         @Query("value") value: Float
-    ): ToggleResponse
+    ): ResponseBody
 
     @GET("/api/periodic")
-    suspend fun getPeriodic(): PeriodicResponse
+    suspend fun getPeriodic(): ResponseBody
+
+    @GET("/api/periodic/{index}/toggle")
+    suspend fun toggleMessage(@retrofit2.http.Path("index") index: Int): ResponseBody
 
     @GET("/api/periodic/all")
     suspend fun toggleAll(
         @Query("enabled") enabled: Int
-    ): ToggleResponse
+    ): ResponseBody
 
     @GET("/api/stats")
-    suspend fun getStats(): StatsResponse
+    suspend fun getStats(): ResponseBody
 
     @GET("/api/log")
-    suspend fun getLog(): LogResponse
+    suspend fun getLog(): ResponseBody
 
     @GET("/api/log/clear")
-    suspend fun clearLog(): ToggleResponse
+    suspend fun clearLog(): ResponseBody
 }
