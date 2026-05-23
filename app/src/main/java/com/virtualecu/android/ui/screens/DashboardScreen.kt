@@ -17,7 +17,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -92,12 +92,12 @@ fun DashboardScreen(
                         singleLine = true,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(8.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
+                        colors = TextFieldDefaults.outlinedTextFieldColors(
                             focusedBorderColor = AccentBlue,
                             unfocusedBorderColor = TextMuted,
                             focusedLabelColor = AccentBlue,
                             unfocusedLabelColor = TextSecondary,
-                            inputColor = MaterialTheme.colorScheme.onSurface
+                            textColor = MaterialTheme.colorScheme.onSurface
                         )
                     )
 
