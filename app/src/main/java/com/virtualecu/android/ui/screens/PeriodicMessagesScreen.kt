@@ -118,9 +118,8 @@ fun PeriodicMessagesScreen(
                         text = "No periodic messages available",
                         style = MaterialTheme.typography.bodyLarge,
                         color = TextSecondary,
-                        modifier = Modifier.padding(vertical = 32.dp),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.padding(vertical = 32.dp).fillMaxWidth(),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
                 }
             }
