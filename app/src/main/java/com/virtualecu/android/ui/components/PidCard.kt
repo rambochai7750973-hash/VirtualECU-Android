@@ -1,6 +1,5 @@
 package com.virtualecu.android.ui.components
 
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,106 +24,76 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.virtualecu.android.model.PidInfo
+import com.virtualecu.android.model.RawPidEntry
 import com.virtualecu.android.ui.theme.AccentBlue
 import com.virtualecu.android.ui.theme.AccentGreen
 import com.virtualecu.android.ui.theme.AccentOrange
 import com.virtualecu.android.ui.theme.AccentPurple
-import com.virtualecu.android.ui.theme.AccentRed
 import com.virtualecu.android.ui.theme.DarkCard
 import com.virtualecu.android.ui.theme.SliderActive
 import com.virtualecu.android.ui.theme.SliderTrack
-import com.virtualecu.android.ui.theme.TextMuted
 import com.virtualecu.android.ui.theme.TextSecondary
 
 @Composable
 fun PidCard(
-    pid: PidInfo,
+    entry: RawPidEntry,
     onValueChanged: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val accentColor = when (pid.pid.toIntOrNull()?.let { it % 4 }) {
-        0 -> AccentGreen
-        1 -> AccentBlue
-        2 -> AccentOrange
-        3 -> AccentPurple
+    val accentColor = when (entry.key.hashCode() % 4) {
+        0 -> AccentGreen; 1 -> AccentBlue; 2 -> AccentOrange; 3 -> AccentPurple
         else -> AccentBlue
     }
 
-    val borderColor by animateColorAsState(
-        targetValue = if (pid.value > 0) accentColor.copy(alpha = 0.3f) else DarkCard,
-        label = "border"
-    )
+    val numValue = entry.rawValue.toFloatOrNull()
 
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = DarkCard),
-        border = BorderStroke(1.dp, borderColor)
+        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.3f))
     ) {
-        Column(
-            modifier = Modifier.padding(12.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "PID ${pid.pid}",
+                    text = entry.key,
                     style = MaterialTheme.typography.labelSmall,
                     color = accentColor
                 )
                 Spacer(modifier = Modifier.weight(1f))
-                Text(
-                    text = pid.unit,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextMuted
-                )
             }
-
             Spacer(modifier = Modifier.height(4.dp))
-
-            Row(
-                verticalAlignment = Alignment.Bottom
-            ) {
+            Row(verticalAlignment = Alignment.Bottom) {
                 Text(
-                    text = formatPidValue(pid.value, pid.pid),
+                    text = entry.rawValue,
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = pid.name,
+                    text = entry.displayName,
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary
                 )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            var sliderValue by remember(pid.value) { mutableFloatStateOf(pid.value) }
-
-            Slider(
-                value = sliderValue.coerceIn(pid.min, pid.max),
-                onValueChange = { sliderValue = it },
-                onValueChangeFinished = { onValueChanged(sliderValue) },
-                valueRange = pid.min..pid.max,
-                modifier = Modifier.fillMaxWidth(),
-                colors = SliderDefaults.colors(
-                    thumbColor = accentColor,
-                    activeTrackColor = SliderActive,
-                    inactiveTrackColor = SliderTrack
+            if (numValue != null && numValue in 0f..100f) {
+                Spacer(modifier = Modifier.height(8.dp))
+                var slider by remember(numValue) { mutableFloatStateOf(numValue) }
+                Slider(
+                    value = slider.coerceIn(0f, 100f),
+                    onValueChange = { slider = it },
+                    onValueChangeFinished = { onValueChanged(slider) },
+                    valueRange = 0f..100f,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = SliderDefaults.colors(
+                        thumbColor = accentColor,
+                        activeTrackColor = SliderActive,
+                        inactiveTrackColor = SliderTrack
+                    )
                 )
-            )
+            }
         }
-    }
-}
-
-private fun formatPidValue(value: Float, pid: String): String {
-    return when (pid) {
-        "0C" -> String.format("%.0f", value)
-        "21", "31" -> String.format("%.0f", value)
-        "10" -> String.format("%.1f", value)
-        else -> String.format("%.1f", value)
     }
 }

@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.virtualecu.android.ui.components.PidCard
 import com.virtualecu.android.ui.components.StatsCard
+import com.virtualecu.android.model.RawPidEntry
 import com.virtualecu.android.ui.theme.AccentBlue
 import com.virtualecu.android.ui.theme.AccentGreen
 import com.virtualecu.android.ui.theme.DarkCard
@@ -185,36 +186,6 @@ fun DashboardScreen(
                     }
                 }
 
-                if (state.rawPidsResponse.isNotBlank()) {
-                    item {
-                        var showRaw by remember { mutableStateOf(false) }
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Button(
-                                onClick = { showRaw = !showRaw },
-                                colors = ButtonDefaults.buttonColors(containerColor = DarkCard),
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(if (showRaw) "Hide raw data" else "Show raw data")
-                            }
-                            if (showRaw) {
-                                Text(
-                                    text = "PIDs: ${state.rawPidsResponse.take(500)}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = TextSecondary,
-                                    modifier = Modifier.padding(top = 4.dp)
-                                )
-                                Text(
-                                    text = "Periodic: ${state.rawPeriodicResponse.take(500)}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = TextSecondary,
-                                    modifier = Modifier.padding(top = 2.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-
                 item {
                     Text(
                         text = "PID Signals",
@@ -226,12 +197,12 @@ fun DashboardScreen(
 
                 items(
                     items = state.pids,
-                    key = { it.pid }
-                ) { pid ->
+                    key = { it.key }
+                ) { entry ->
                     PidCard(
-                        pid = pid,
+                        entry = entry,
                         onValueChanged = { value ->
-                            viewModel.setPidOverride(pid.pid, value)
+                            viewModel.setPidOverride(entry.key, value)
                         }
                     )
                 }

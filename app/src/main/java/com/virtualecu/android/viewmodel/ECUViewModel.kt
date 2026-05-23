@@ -6,11 +6,10 @@ import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.google.gson.JsonPrimitive
 import com.google.gson.JsonSyntaxException
-import com.google.gson.JsonArray
 import com.virtualecu.android.api.RetrofitClient
 import com.virtualecu.android.model.PeriodicMessage
-import com.virtualecu.android.model.PidInfo
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,8 +22,14 @@ import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 
+data class RawPidEntry(
+    val key: String,
+    val rawValue: String,
+    val displayName: String
+)
+
 data class ECUState(
-    val pids: List<PidInfo> = emptyList(),
+    val pids: List<RawPidEntry> = emptyList(),
     val messages: List<PeriodicMessage> = emptyList(),
     val txCount: Long = 0,
     val rxCount: Long = 0,
@@ -33,10 +38,7 @@ data class ECUState(
     val connected: Boolean = false,
     val loading: Boolean = false,
     val error: String? = null,
-    val baseIp: String = "192.168.4.1",
-    val rawPidsResponse: String = "",
-    val rawStatsResponse: String = "",
-    val rawPeriodicResponse: String = ""
+    val baseIp: String = "192.168.4.1"
 )
 
 class ECUViewModel : ViewModel() {
@@ -45,20 +47,14 @@ class ECUViewModel : ViewModel() {
     val state: StateFlow<ECUState> = _state.asStateFlow()
     private val gson = Gson()
 
-    private val pidDefinitions = listOf(
-        PidInfo("04", "Engine Load", "%", 0f, 0f, 100f),
-        PidInfo("05", "Coolant Temp", "°C", 0f, -40f, 215f),
-        PidInfo("0B", "Intake Press", "kPa", 0f, 0f, 255f),
-        PidInfo("0C", "Engine RPM", "rpm", 0f, 0f, 8000f),
-        PidInfo("0D", "Vehicle Speed", "km/h", 0f, 0f, 255f),
-        PidInfo("0F", "Intake Air T", "°C", 0f, -40f, 215f),
-        PidInfo("10", "MAF", "g/s", 0f, 0f, 655f),
-        PidInfo("11", "Throttle Pos", "%", 0f, 0f, 100f),
-        PidInfo("21", "Distance DTC", "km", 0f, 0f, 65535f),
-        PidInfo("2F", "Fuel Level", "%", 0f, 0f, 100f),
-        PidInfo("31", "Odometer", "km", 0f, 0f, 4.29e9f),
-        PidInfo("46", "Ambient Temp", "°C", 0f, -40f, 215f),
-        PidInfo("5C", "Oil Temp", "°C", 0f, -40f, 215f)
+    private val knownPids = mapOf(
+        "04" to "Engine Load",   "05" to "Coolant Temp",
+        "0B" to "Intake Press",  "0C" to "Engine RPM",
+        "0D" to "Vehicle Speed", "0F" to "Intake Air T",
+        "10" to "MAF",           "11" to "Throttle Pos",
+        "21" to "Distance DTC",  "2F" to "Fuel Level",
+        "31" to "Odometer",      "46" to "Ambient Temp",
+        "5C" to "Oil Temp"
     )
 
     private var pollingJob: Job? = null
@@ -73,15 +69,13 @@ class ECUViewModel : ViewModel() {
             _state.value = _state.value.copy(loading = true, error = null)
             try {
                 RetrofitClient.updateBaseUrl(_state.value.baseIp)
-                val bodyString = safeReadBody(RetrofitClient.getApi().getPids())
-                parsePids(bodyString)
+                val raw = safeReadBody(RetrofitClient.getApi().getPids())
+                parsePids(raw)
                 _state.value = _state.value.copy(connected = true, loading = false, error = null)
                 startPolling()
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
-                    connected = false,
-                    loading = false,
-                    error = formatError(e)
+                    connected = false, loading = false, error = formatError(e)
                 )
             }
         }
@@ -89,10 +83,7 @@ class ECUViewModel : ViewModel() {
 
     fun disconnect() {
         pollingJob?.cancel()
-        _state.value = _state.value.copy(
-            connected = false, pids = emptyList(), error = null,
-            rawPidsResponse = "", rawStatsResponse = "", rawPeriodicResponse = ""
-        )
+        _state.value = _state.value.copy(connected = false, pids = emptyList(), error = null)
     }
 
     private fun startPolling() {
@@ -108,9 +99,7 @@ class ECUViewModel : ViewModel() {
     private suspend fun fetchAll() {
         try {
             val api = RetrofitClient.getApi()
-
-            val pidsRaw = safeReadBody(api.getPids())
-            parsePids(pidsRaw)
+            parsePids(safeReadBody(api.getPids()))
 
             val periodicRaw = safeReadBody(api.getPeriodic())
             parsePeriodic(periodicRaw)
@@ -121,112 +110,163 @@ class ECUViewModel : ViewModel() {
             _state.value = _state.value.copy(connected = true, error = null)
         } catch (e: Exception) {
             _state.value = _state.value.copy(
-                error = "Poll error: ${formatError(e)}",
-                connected = false
+                error = "Poll error: ${formatError(e)}", connected = false
             )
             pollingJob?.cancel()
         }
     }
 
     private fun parsePids(raw: String) {
-        _state.value = _state.value.copy(rawPidsResponse = raw)
         try {
             val root: JsonElement = JsonParser().parse(raw)
-            val obj: JsonObject = when {
-                root.isJsonObject -> root.asJsonObject
+            val entries = mutableListOf<RawPidEntry>()
+
+            when {
+                root.isJsonObject -> {
+                    val obj = root.asJsonObject
+                    for (key in obj.keySet()) {
+                        val value = extractNumber(obj.get(key))
+                        val display = knownPids[key] ?: knownPids[key.trimStart('0')] ?: key
+                        entries.add(RawPidEntry(key, value, display))
+                    }
+                }
                 root.isJsonArray -> {
                     val arr = root.asJsonArray
-                    val map = JsonObject()
                     for (i in 0 until arr.size()) {
-                        val el = arr[i].asJsonObject
-                        val pid = el.get("pid")?.asString ?: el.get("id")?.asString ?: continue
-                        val value = el.get("value")?.asFloat ?: el.get("v")?.asFloat ?: continue
-                        map.addProperty(pid, value)
+                        val el = arr[i]
+                        when {
+                            el.isJsonObject -> {
+                                val item = el.asJsonObject
+                                val key = item.get("pid")?.asString
+                                    ?: item.get("id")?.asString
+                                    ?: item.get("key")?.asString
+                                    ?: i.toString()
+                                val value = extractNumber(
+                                    item.get("value") ?: item.get("v")
+                                        ?: item.get("val") ?: item.get("data")
+                                )
+                                val display = knownPids[key] ?: knownPids[key.trimStart('0')] ?: key
+                                entries.add(RawPidEntry(key, value, display))
+                            }
+                            el.isJsonPrimitive -> {
+                                entries.add(RawPidEntry(i.toString(), el.asString, "Item $i"))
+                            }
+                        }
                     }
-                    map
                 }
-                else -> JsonObject()
             }
 
-            val pidsCombined = pidDefinitions.map { def ->
-                val value = extractPidValue(obj, def.pid)
-                def.copy(value = value)
-            }
-            _state.value = _state.value.copy(pids = pidsCombined)
+            entries.sortBy { it.key }
+            _state.value = _state.value.copy(pids = entries)
         } catch (e: Exception) {
-            _state.value = _state.value.copy(error = "PID parse error: ${e.localizedMessage}")
+            _state.value = _state.value.copy(
+                pids = listOf(RawPidEntry("error", e.localizedMessage ?: "Parse error", "Parse Error")),
+                error = "PID parse: ${e.localizedMessage}"
+            )
         }
     }
 
-    private fun extractPidValue(obj: JsonObject, pid: String): Float {
-        obj.get(pid)?.let { return it.asFloat }
-        obj.get(pid.trimStart('0'))?.let { return it.asFloat }
-        val pidInt = pid.toIntOrNull()
-        if (pidInt != null) obj.get(pidInt.toString())?.let { return it.asFloat }
-        obj.entrySet().forEach { (key, value) ->
-            if (key.equals(pid, ignoreCase = true)) return value.asFloat
-            if (key.trimStart('0') == pid.trimStart('0')) return value.asFloat
-        }
-        return 0f
+    private fun extractNumber(el: JsonElement?): String {
+        if (el == null || el.isJsonNull) return "--"
+        return try {
+            when {
+                el.isJsonPrimitive -> {
+                    val p = el.asJsonPrimitive
+                    when {
+                        p.isNumber -> {
+                            val d = p.asDouble
+                            if (d == d.toLong().toDouble()) d.toLong().toString() else String.format("%.1f", d)
+                        }
+                        p.isString -> {
+                            val s = p.asString
+                            s.toDoubleOrNull()?.let { d ->
+                                if (d == d.toLong().toDouble()) d.toLong().toString() else String.format("%.1f", d)
+                            } ?: s
+                        }
+                        else -> p.asString
+                    }
+                }
+                else -> el.toString()
+            }
+        } catch (_: Exception) { el.toString() }
     }
 
     private fun parsePeriodic(raw: String) {
-        _state.value = _state.value.copy(rawPeriodicResponse = raw)
         try {
             val root: JsonElement = JsonParser().parse(raw)
-            val msgs: List<PeriodicMessage> = when {
+            val msgs = mutableListOf<PeriodicMessage>()
+
+            when {
                 root.isJsonArray -> {
                     val arr = root.asJsonArray
-                    (0 until arr.size()).map { i ->
-                        val obj = arr[i].asJsonObject
-                        PeriodicMessage(
-                            id = obj.get("id")?.asString ?: "",
-                            name = obj.get("name")?.asString ?: obj.get("desc")?.asString ?: "",
-                            interval = obj.get("interval")?.asInt ?: obj.get("ms")?.asInt ?: 0,
-                            enabled = obj.get("enabled")?.asBoolean ?: obj.get("active")?.asBoolean ?: false
-                        )
+                    for (i in 0 until arr.size()) {
+                        val o = arr[i].asJsonObject
+                        msgs.add(PeriodicMessage(
+                            id = getStr(o, "id", ""),
+                            name = getStr(o, "name", getStr(o, "desc", "")),
+                            interval = getInt(o, "interval", getInt(o, "ms", 0)),
+                            enabled = getBool(o, "enabled", getBool(o, "active", false))
+                        ))
                     }
                 }
                 root.isJsonObject -> {
                     val obj = root.asJsonObject
-                    val messagesArr = obj.getAsJsonArray("messages")
+                    val arr = obj.getAsJsonArray("messages")
                         ?: obj.getAsJsonArray("periodic")
                         ?: obj.getAsJsonArray("list")
-                    if (messagesArr != null) {
-                        (0 until messagesArr.size()).map { i ->
-                            val o = messagesArr[i].asJsonObject
-                            PeriodicMessage(
-                                id = o.get("id")?.asString ?: "",
-                                name = o.get("name")?.asString ?: "",
-                                interval = o.get("interval")?.asInt ?: 0,
-                                enabled = o.get("enabled")?.asBoolean ?: true
-                            )
+                    if (arr != null) {
+                        for (i in 0 until arr.size()) {
+                            val o = arr[i].asJsonObject
+                            msgs.add(PeriodicMessage(
+                                id = getStr(o, "id", ""),
+                                name = getStr(o, "name", ""),
+                                interval = getInt(o, "interval", 0),
+                                enabled = getBool(o, "enabled", true)
+                            ))
                         }
-                    } else emptyList()
+                    }
                 }
-                else -> emptyList()
             }
             _state.value = _state.value.copy(messages = msgs)
         } catch (_: Exception) { }
     }
 
     private fun parseStats(raw: String) {
-        _state.value = _state.value.copy(rawStatsResponse = raw)
         try {
             val obj = JsonParser().parse(raw).asJsonObject
             _state.value = _state.value.copy(
-                txCount = obj.get("txCount")?.asLong ?: obj.get("tx")?.asLong ?: obj.get("txcount")?.asLong ?: 0,
-                rxCount = obj.get("rxCount")?.asLong ?: obj.get("rx")?.asLong ?: obj.get("rxcount")?.asLong ?: 0,
-                uptime = obj.get("uptime")?.asLong ?: obj.get("uptimeSeconds")?.asLong ?: obj.get("up")?.asLong ?: 0
+                txCount = getLong(obj, "txCount", getLong(obj, "tx", getLong(obj, "txcount", 0L))),
+                rxCount = getLong(obj, "rxCount", getLong(obj, "rx", getLong(obj, "rxcount", 0L))),
+                uptime = getLong(obj, "uptime", getLong(obj, "uptimeSeconds", getLong(obj, "up", 0L)))
             )
         } catch (_: Exception) { }
+    }
+
+    private fun getStr(o: JsonObject, key: String, fallback: String): String {
+        val el = o.get(key)
+        return if (el != null && !el.isJsonNull) el.asString else fallback
+    }
+
+    private fun getInt(o: JsonObject, key: String, fallback: Int): Int {
+        val el = o.get(key)
+        return if (el != null && !el.isJsonNull) el.asInt else fallback
+    }
+
+    private fun getLong(o: JsonObject, key: String, fallback: Long): Long {
+        val el = o.get(key)
+        return if (el != null && !el.isJsonNull) el.asLong else fallback
+    }
+
+    private fun getBool(o: JsonObject, key: String, fallback: Boolean): Boolean {
+        val el = o.get(key)
+        return if (el != null && !el.isJsonNull) el.asBoolean else fallback
     }
 
     private suspend fun safeReadBody(body: ResponseBody): String {
         return try {
             body.string()
         } catch (e: Exception) {
-            throw Exception("Failed to read response: ${e.localizedMessage}")
+            throw Exception("Read response failed: ${e.localizedMessage}")
         }
     }
 
@@ -237,9 +277,9 @@ class ECUViewModel : ViewModel() {
                 val body = try { e.response()?.errorBody()?.string() ?: "no body" } catch (_: Exception) { "unreadable" }
                 "HTTP $code: $body"
             }
-            is SocketTimeoutException -> "Connection timed out. Check if ECU is powered on."
-            is ConnectException -> "Connection refused. Check IP address."
-            is UnknownHostException -> "Unknown host. Check IP address."
+            is SocketTimeoutException -> "Timeout. Check if ECU is powered on."
+            is ConnectException -> "Connection refused. Check IP."
+            is UnknownHostException -> "Unknown host. Check IP."
             is JsonSyntaxException -> "Invalid JSON: ${e.localizedMessage}"
             else -> "${e.localizedMessage ?: "Unknown error"}"
         }
@@ -257,20 +297,11 @@ class ECUViewModel : ViewModel() {
         }
     }
 
-    fun toggleMessage(index: Int) {
-        viewModelScope.launch {
-            try { RetrofitClient.getApi().toggleMessage(index) } catch (_: Exception) { }
-        }
-    }
-
     fun fetchLog() {
         viewModelScope.launch {
             try {
-                val logText = safeReadBody(RetrofitClient.getApi().getLog())
-                val cleaned = logText
-                    .replace("\\n", "\n")
-                    .replace("\\\"", "\"")
-                    .trim('"')
+                val raw = safeReadBody(RetrofitClient.getApi().getLog())
+                val cleaned = raw.replace("\\n", "\n").replace("\\\"", "\"").trim('"')
                 _state.value = _state.value.copy(log = cleaned)
             } catch (_: Exception) { }
         }
@@ -280,15 +311,6 @@ class ECUViewModel : ViewModel() {
         viewModelScope.launch {
             try { RetrofitClient.getApi().clearLog() } catch (_: Exception) { }
             _state.value = _state.value.copy(log = "")
-        }
-    }
-
-    fun refreshPids() {
-        viewModelScope.launch {
-            try {
-                val raw = safeReadBody(RetrofitClient.getApi().getPids())
-                parsePids(raw)
-            } catch (_: Exception) { }
         }
     }
 }
