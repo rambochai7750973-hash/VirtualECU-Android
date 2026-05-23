@@ -7,6 +7,7 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.JsonSyntaxException
+import com.google.gson.JsonArray
 import com.virtualecu.android.api.RetrofitClient
 import com.virtualecu.android.model.PeriodicMessage
 import com.virtualecu.android.model.PidInfo
@@ -130,15 +131,16 @@ class ECUViewModel : ViewModel() {
     private fun parsePids(raw: String) {
         _state.value = _state.value.copy(rawPidsResponse = raw)
         try {
-            val root = JsonParser.parseString(raw)
-            val obj = when {
+            val root: JsonElement = JsonParser().parse(raw)
+            val obj: JsonObject = when {
                 root.isJsonObject -> root.asJsonObject
                 root.isJsonArray -> {
+                    val arr = root.asJsonArray
                     val map = JsonObject()
-                    root.asJsonArray.forEach { item ->
-                        val el = item.asJsonObject
-                        val pid = el.get("pid")?.asString ?: return@forEach
-                        val value = el.get("value")?.asFloat ?: el.get("v")?.asFloat ?: return@forEach
+                    for (i in 0 until arr.size()) {
+                        val el = arr[i].asJsonObject
+                        val pid = el.get("pid")?.asString ?: el.get("id")?.asString ?: continue
+                        val value = el.get("value")?.asFloat ?: el.get("v")?.asFloat ?: continue
                         map.addProperty(pid, value)
                     }
                     map
@@ -171,11 +173,12 @@ class ECUViewModel : ViewModel() {
     private fun parsePeriodic(raw: String) {
         _state.value = _state.value.copy(rawPeriodicResponse = raw)
         try {
-            val root = JsonParser.parseString(raw)
+            val root: JsonElement = JsonParser().parse(raw)
             val msgs: List<PeriodicMessage> = when {
                 root.isJsonArray -> {
-                    root.asJsonArray.map { el ->
-                        val obj = el.asJsonObject
+                    val arr = root.asJsonArray
+                    (0 until arr.size()).map { i ->
+                        val obj = arr[i].asJsonObject
                         PeriodicMessage(
                             id = obj.get("id")?.asString ?: "",
                             name = obj.get("name")?.asString ?: obj.get("desc")?.asString ?: "",
@@ -189,15 +192,17 @@ class ECUViewModel : ViewModel() {
                     val messagesArr = obj.getAsJsonArray("messages")
                         ?: obj.getAsJsonArray("periodic")
                         ?: obj.getAsJsonArray("list")
-                    messagesArr?.map { el ->
-                        val o = el.asJsonObject
-                        PeriodicMessage(
-                            id = o.get("id")?.asString ?: "",
-                            name = o.get("name")?.asString ?: "",
-                            interval = o.get("interval")?.asInt ?: 0,
-                            enabled = o.get("enabled")?.asBoolean ?: true
-                        )
-                    } ?: emptyList()
+                    if (messagesArr != null) {
+                        (0 until messagesArr.size()).map { i ->
+                            val o = messagesArr[i].asJsonObject
+                            PeriodicMessage(
+                                id = o.get("id")?.asString ?: "",
+                                name = o.get("name")?.asString ?: "",
+                                interval = o.get("interval")?.asInt ?: 0,
+                                enabled = o.get("enabled")?.asBoolean ?: true
+                            )
+                        }
+                    } else emptyList()
                 }
                 else -> emptyList()
             }
@@ -208,7 +213,7 @@ class ECUViewModel : ViewModel() {
     private fun parseStats(raw: String) {
         _state.value = _state.value.copy(rawStatsResponse = raw)
         try {
-            val obj = JsonParser.parseString(raw).asJsonObject
+            val obj = JsonParser().parse(raw).asJsonObject
             _state.value = _state.value.copy(
                 txCount = obj.get("txCount")?.asLong ?: obj.get("tx")?.asLong ?: obj.get("txcount")?.asLong ?: 0,
                 rxCount = obj.get("rxCount")?.asLong ?: obj.get("rx")?.asLong ?: obj.get("rxcount")?.asLong ?: 0,
