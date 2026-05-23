@@ -2,6 +2,7 @@ package com.virtualecu.android.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.gson.JsonSyntaxException
 import com.virtualecu.android.api.RetrofitClient
 import com.virtualecu.android.model.LogResponse
 import com.virtualecu.android.model.PeriodicMessage
@@ -15,6 +16,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import retrofit2.HttpException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 
 data class ECUState(
     val pids: List<PidInfo> = emptyList(),
@@ -66,7 +71,7 @@ class ECUViewModel : ViewModel() {
         "5C" to { it.oilTemp }
     )
 
-    private var pollingJob: kotlinx.coroutines.Job? = null
+    private var pollingJob: Job? = null
 
     fun setBaseIp(ip: String) {
         _state.value = _state.value.copy(baseIp = ip)
@@ -79,13 +84,13 @@ class ECUViewModel : ViewModel() {
             try {
                 RetrofitClient.updateBaseUrl(_state.value.baseIp)
                 RetrofitClient.getApi().getPids()
-                _state.value = _state.value.copy(connected = true, loading = false)
+                _state.value = _state.value.copy(connected = true, loading = false, error = null)
                 startPolling()
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     connected = false,
                     loading = false,
-                    error = "Connection failed: ${e.localizedMessage}"
+                    error = formatError(e)
                 )
             }
         }
@@ -93,7 +98,7 @@ class ECUViewModel : ViewModel() {
 
     fun disconnect() {
         pollingJob?.cancel()
-        _state.value = _state.value.copy(connected = false, pids = emptyList())
+        _state.value = _state.value.copy(connected = false, pids = emptyList(), error = null)
     }
 
     private fun startPolling() {
@@ -112,7 +117,10 @@ class ECUViewModel : ViewModel() {
 
             val pidsResponse: PidResponse = try {
                 api.getPids()
-            } catch (e: Exception) { null } ?: PidResponse()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(error = "PID fetch failed: ${formatError(e)}")
+                return
+            }
 
             val pidsCombined = pidDefinitions.map { def ->
                 val value = rawToPidMap[def.pid]?.invoke(pidsResponse) ?: def.value
@@ -121,11 +129,11 @@ class ECUViewModel : ViewModel() {
 
             val periodicResponse: PeriodicResponse = try {
                 api.getPeriodic()
-            } catch (e: Exception) { null } ?: PeriodicResponse(emptyList())
+            } catch (e: Exception) { PeriodicResponse(emptyList()) }
 
             val stats: StatsResponse = try {
                 api.getStats()
-            } catch (e: Exception) { null } ?: StatsResponse(0, 0, 0)
+            } catch (e: Exception) { StatsResponse(0, 0, 0) }
 
             _state.value = _state.value.copy(
                 pids = pidsCombined,
@@ -138,10 +146,25 @@ class ECUViewModel : ViewModel() {
             )
         } catch (e: Exception) {
             _state.value = _state.value.copy(
-                error = "Poll error: ${e.localizedMessage}",
+                error = "Poll error: ${formatError(e)}",
                 connected = false
             )
             pollingJob?.cancel()
+        }
+    }
+
+    private fun formatError(e: Exception): String {
+        return when (e) {
+            is HttpException -> {
+                val code = e.code()
+                val body = try { e.response()?.errorBody()?.string() ?: "no body" } catch (_: Exception) { "unreadable" }
+                "HTTP $code: $body"
+            }
+            is SocketTimeoutException -> "Connection timed out. Check if ECU is powered on."
+            is ConnectException -> "Connection refused. Check IP address."
+            is UnknownHostException -> "Unknown host. Check IP address."
+            is JsonSyntaxException -> "Invalid response from ECU: ${e.localizedMessage}"
+            else -> "${e.localizedMessage ?: "Unknown error"}"
         }
     }
 
