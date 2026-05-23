@@ -10,6 +10,7 @@ import com.google.gson.JsonPrimitive
 import com.google.gson.JsonSyntaxException
 import com.virtualecu.android.api.RetrofitClient
 import com.virtualecu.android.model.PeriodicMessage
+import com.virtualecu.android.model.RawPidEntry
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,12 +22,6 @@ import retrofit2.HttpException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
-
-data class RawPidEntry(
-    val key: String,
-    val rawValue: String,
-    val displayName: String
-)
 
 data class ECUState(
     val pids: List<RawPidEntry> = emptyList(),
